@@ -18,7 +18,8 @@ import {
     TopNavigation,
     Box,
     Table,
-    BreadcrumbGroup
+    BreadcrumbGroup,
+    Modal
 } from "@cloudscape-design/components";
 import {Amplify, Auth, Storage} from 'aws-amplify';
 import {Authenticator} from '@aws-amplify/ui-react';
@@ -51,7 +52,7 @@ const ServiceNavigation = () => {
     return (
         <SideNavigation
             activeHref={location.pathname}
-            header={null} // Remove the header here
+            header={null}
             onFollow={onFollowHandler}
             items={[
                 {type: "link", text: "Upload", href: "/"},
@@ -75,61 +76,120 @@ function formatBytes(a, b = 2, k = 1024) {
 }
 
 const BucketNavigation = ({ currentPath, contents, onNavigate, onDelete }) => {
+    const [showDeleteConfirmation, setShowDeleteConfirmation] = useState(false);
+    const [itemToDelete, setItemToDelete] = useState(null);
+
+    const handleDelete = async () => {
+        try {
+            await onDelete(itemToDelete.key);
+            setShowDeleteConfirmation(false);
+            setItemToDelete(null);
+        } catch (error) {
+            console.error('Error deleting item:', error);
+        }
+    };
+
     return (
-        <Table
-            items={contents}
-            loadingText="Loading bucket contents..."
-            columnDefinitions={[
-                {
-                    id: 'name',
-                    header: 'Name',
-                    cell: item => (
-                        <Link
-                            onFollow={() => onNavigate(item.key, item.isFolder)}
+        <>
+            <Table
+                items={contents}
+                loadingText="Loading bucket contents..."
+                columnDefinitions={[
+                    {
+                        id: 'name',
+                        header: 'Name',
+                        cell: item => (
+                            <Link
+                                onFollow={() => onNavigate(item.key, item.isFolder)}
+                            >
+                                {item.isFolder ? '📁 ' : '📄 '}
+                                {item.displayName}
+                            </Link>
+                        ),
+                        sortingField: 'displayName'
+                    },
+                    {
+                        id: 'lastModified',
+                        header: 'Last modified',
+                        cell: item => item.lastModified ? new Date(item.lastModified).toLocaleString() : '-'
+                    },
+                    {
+                        id: 'size',
+                        header: 'Size',
+                        cell: item => item.isFolder ? '-' : formatBytes(item.size)
+                    },
+                    {
+                        id: 'actions',
+                        header: 'Actions',
+                        cell: item => (
+                            <Button
+                                onClick={() => {
+                                    setItemToDelete(item);
+                                    setShowDeleteConfirmation(true);
+                                }}
+                                variant="link"
+                            >
+                                Delete
+                            </Button>
+                        )
+                    }
+                ]}
+                sortingDisabled={false}
+                empty={
+                    <Box textAlign="center" color="inherit">
+                        <b>No files</b>
+                        <Box
+                            padding={{ bottom: "s" }}
+                            variant="p"
+                            color="inherit"
                         >
-                            {item.isFolder ? '📁 ' : '📄 '}
-                            {item.displayName}
-                        </Link>
-                    ),
-                    sortingField: 'displayName'
-                },
-                {
-                    id: 'lastModified',
-                    header: 'Last modified',
-                    cell: item => item.lastModified ? new Date(item.lastModified).toLocaleString() : '-'
-                },
-                {
-                    id: 'size',
-                    header: 'Size',
-                    cell: item => item.isFolder ? '-' : formatBytes(item.size)
-                },
-                {
-                    id: 'actions',
-                    header: 'Actions',
-                    cell: item => (
-                        <Button
-                            onClick={() => onDelete(item.key)}
-                            variant="link"
-                        >
-                            Delete
-                        </Button>
-                    )
-                }
-            ]}
-            sortingDisabled={false}
-            empty={
-                <Box textAlign="center" color="inherit">
-                    <b>No files</b>
-                    <Box
-                        padding={{ bottom: "s" }}
-                        variant="p"
-                        color="inherit"
-                    >
-                        This folder is empty
+                            This folder is empty
+                        </Box>
                     </Box>
-                </Box>
-            }
-        />
+                }
+            />
+
+            {showDeleteConfirmation && (
+                <Modal
+                    visible={showDeleteConfirmation}
+                    onDismiss={() => {
+                        setShowDeleteConfirmation(false);
+                        setItemToDelete(null);
+                    }}
+                    header={`Delete Confirmation`}
+                    closeAriaLabel="Close dialog"
+                    footer={
+                        <Box float="right">
+                            <SpaceBetween direction="horizontal" size="xs">
+                                <Button
+                                    variant="link"
+                                    onClick={() => {
+                                        setShowDeleteConfirmation(false);
+                                        setItemToDelete(null);
+                                    }}
+                                >
+                                    Cancel
+                                </Button>
+                                <Button
+                                    variant="primary"
+                                    onClick={handleDelete}
+                                >
+                                    Delete
+                                </Button>
+                            </SpaceBetween>
+                        </Box>
+                    }
+                >
+                    <Box>
+                        Are you sure you want to delete{' '}
+                        <strong>{itemToDelete?.displayName}</strong>?
+                        {itemToDelete?.isFolder && (
+                            <p>This will delete all contents within this folder.</p>
+                        )}
+                    </Box>
+                </Modal>
+            )}
+        </>
     );
 };
 const Content = () => {
@@ -255,6 +315,7 @@ const Content = () => {
         setCurrentPath(parentPath);
         listBucketContents(parentPath);
     };
+
     const createNewFolder = async () => {
         const folderName = prompt('Enter folder name:');
         if (!folderName) return;
@@ -590,7 +651,7 @@ const Content = () => {
                                         ]}
                                     />
                                 </Header>
-                            }
+                                                            }
                         >
                             <input
                                 type="file"
