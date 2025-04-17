@@ -87,7 +87,7 @@ Comment or remove the following block:
 display: none;
 }
 ```
-> After this change you need to re-run `amplify publish`
+> After this change you need to re-run `amplify publish` or `amplify publish -c`
 
 
 ### Prerequisites
