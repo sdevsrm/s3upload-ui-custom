@@ -1,33 +1,54 @@
+/**
+ * Required React and Router imports
+ */
 import React, {useState, useRef, useEffect} from 'react';
 import {useLocation, useNavigate} from 'react-router-dom';
+
+/**
+ * AWS Amplify and UI style imports
+ */
 import '@aws-amplify/ui-react/styles.css';
 import './App.css';
+
+/**
+ * AWS Cloudscape Design System Component imports
+ * These components provide the UI elements for the application
+ */
 import {
-    AppLayout,
-    ContentLayout,
-    SideNavigation,
-    Header,
-    SpaceBetween,
-    Link,
-    Button,
-    Alert,
-    ProgressBar,
-    FormField,
-    TokenGroup,
-    Container,
-    TopNavigation,
-    Box,
-    Table,
-    BreadcrumbGroup,
-    Modal
+    AppLayout,      // Main layout container
+    ContentLayout,  // Content area layout
+    SideNavigation, // Side navigation menu
+    Header,         // Header component
+    SpaceBetween,  // Spacing utility
+    Link,          // Link component
+    Button,        // Button component
+    Alert,         // Alert messages
+    ProgressBar,   // Upload progress indicator
+    FormField,     // Form input fields
+    TokenGroup,    // Group of tokens/tags
+    Container,     // Container component
+    TopNavigation, // Top navigation bar
+    Box,          // Layout box
+    Table,        // Table component
+    BreadcrumbGroup, // Navigation breadcrumbs
+    Modal         // Modal dialog
 } from "@cloudscape-design/components";
+
+/**
+ * AWS Amplify core imports for authentication and storage
+ */
 import {Amplify, Auth, Storage} from 'aws-amplify';
 import {Authenticator} from '@aws-amplify/ui-react';
 
+// AWS configuration import
 import awsconfig from './aws-exports';
 
+// Configure Amplify with AWS settings
 Amplify.configure(awsconfig);
 
+/**
+ * Application layout labels for accessibility
+ */
 const appLayoutLabels = {
     navigation: 'Side navigation',
     navigationToggle: 'Open side navigation',
@@ -38,10 +59,19 @@ const appLayoutLabels = {
     toolsClose: 'Close help panel'
 };
 
+/**
+ * ServiceNavigation Component
+ * Handles the side navigation menu of the application
+ * @returns {JSX.Element} Side navigation component
+ */
 const ServiceNavigation = () => {
     const location = useLocation();
     let navigate = useNavigate();
 
+    /**
+     * Handles navigation events
+     * @param {Event} event - Navigation event
+     */
     function onFollowHandler(event) {
         if (!event.detail.external) {
             event.preventDefault();
@@ -68,6 +98,13 @@ const ServiceNavigation = () => {
     );
 }
 
+/**
+ * Utility function to format bytes into human-readable format
+ * @param {number} a - Bytes to format
+ * @param {number} b - Decimal points (default: 2)
+ * @param {number} k - Base unit (default: 1024)
+ * @returns {string} Formatted string with appropriate unit
+ */
 function formatBytes(a, b = 2, k = 1024) {
     if (a === 0) return "0 Bytes";
     if (!a) return "N/A";
@@ -75,10 +112,24 @@ function formatBytes(a, b = 2, k = 1024) {
     return parseFloat((a / Math.pow(k, d)).toFixed(Math.max(0, b))) + " " + ["Bytes", "KB", "MB", "GB", "TB", "PB", "EB", "ZB", "YB"][d];
 }
 
+/**
+ * BucketNavigation Component
+ * Handles the display and navigation of S3 bucket contents
+ * @param {Object} props - Component props
+ * @param {string} props.currentPath - Current path in the bucket
+ * @param {Array} props.contents - Bucket contents to display
+ * @param {Function} props.onNavigate - Navigation handler
+ * @param {Function} props.onDelete - Delete handler
+ * @returns {JSX.Element} Bucket navigation interface
+ */
 const BucketNavigation = ({ currentPath, contents, onNavigate, onDelete }) => {
+    // State for delete confirmation modal
     const [showDeleteConfirmation, setShowDeleteConfirmation] = useState(false);
     const [itemToDelete, setItemToDelete] = useState(null);
 
+    /**
+     * Handles the file/folder deletion process
+     */
     const handleDelete = async () => {
         try {
             await onDelete(itemToDelete.key);
@@ -89,6 +140,7 @@ const BucketNavigation = ({ currentPath, contents, onNavigate, onDelete }) => {
         }
     };
 
+    // ... rest of the BucketNavigation component
     return (
         <>
             <Table
@@ -149,6 +201,7 @@ const BucketNavigation = ({ currentPath, contents, onNavigate, onDelete }) => {
                 }
             />
 
+            {/* Delete confirmation modal */}
             {showDeleteConfirmation && (
                 <Modal
                     visible={showDeleteConfirmation}
@@ -192,9 +245,19 @@ const BucketNavigation = ({ currentPath, contents, onNavigate, onDelete }) => {
         </>
     );
 };
+
+/**
+ * Content Component
+ * Main content area of the application
+ * Handles file uploads, bucket navigation, and content display
+ * @returns {JSX.Element} Main content of the application
+ */
 const Content = () => {
+    // Refs for file input elements
     const fileInput = useRef(null);
     const folderInput = useRef(null);
+
+    // State variables
     const [visibleAlert, setVisibleAlert] = useState(false);
     const [alertMessage, setAlertMessage] = useState('');
     const [uploadList, setUploadList] = useState([]);
@@ -207,6 +270,7 @@ const Content = () => {
     const [viewingBucket, setViewingBucket] = useState(false);
     const maxFileSize = 5 * 1024 * 1024 * 1024; // 5GB in bytes
 
+    // Effect to set bucket name on component mount
     useEffect(() => {
         try {
             const bucket = awsconfig.aws_user_files_s3_bucket;
@@ -217,6 +281,10 @@ const Content = () => {
         }
     }, []);
 
+    /**
+     * Lists contents of the S3 bucket
+     * @param {string} path - Path to list contents from
+     */
     const listBucketContents = async (path = '') => {
         try {
             console.log('Listing contents for path:', path);
@@ -229,7 +297,7 @@ const Content = () => {
             const items = result.results || [];
             const processedItems = new Map();
             
-            // First pass: Process .keep files to identify all folders
+            // Process .keep files to identify all folders
             items.forEach(item => {
                 if (item.key.endsWith('/.keep')) {
                     const folderPath = item.key.slice(0, -5); // Remove '/.keep'
@@ -251,7 +319,7 @@ const Content = () => {
                 }
             });
 
-            // Second pass: Process regular files and implicit folders
+            // Process regular files and implicit folders
             items.forEach(item => {
                 if (!item.key || item.key.endsWith('/.keep')) return;
 
@@ -304,6 +372,9 @@ const Content = () => {
         }
     };
 
+    /**
+     * Navigates to the parent folder
+     */
     const goToParentFolder = () => {
         if (!currentPath) {
             setViewingBucket(false);
@@ -316,6 +387,9 @@ const Content = () => {
         listBucketContents(parentPath);
     };
 
+    /**
+     * Creates a new folder in the current path
+     */
     const createNewFolder = async () => {
         const folderName = prompt('Enter folder name:');
         if (!folderName) return;
@@ -330,7 +404,7 @@ const Content = () => {
                 
                 console.log('Creating folder at path:', folderPath);
                 
-                // First check if folder already exists
+                // Check if folder already exists
                 const existingCheck = await Storage.list(`${folderPath}/`, {
                     level: 'protected',
                     pageSize: 1
@@ -363,6 +437,10 @@ const Content = () => {
         }
     };
 
+    /**
+     * Deletes a file or folder from S3
+     * @param {string} key - The key of the item to delete
+     */
     const deleteFile = async (key) => {
         try {
             if (key.endsWith('/') || !key.includes('.')) {
@@ -404,6 +482,11 @@ const Content = () => {
         }
     };
 
+    /**
+     * Handles file selection for upload
+     * @param {Event} e - The file selection event
+     * @param {boolean} isFolder - Whether it's a folder upload
+     */
     const handleFileSelect = (e, isFolder = false) => {
         e.preventDefault();
         let tempUploadList = [];
@@ -444,6 +527,11 @@ const Content = () => {
         setFileList(files);
     };
 
+    /**
+     * Creates a progress bar for file upload
+     * @param {File} fileObject - The file being uploaded
+     * @returns {Function} Progress callback function
+     */
     function progressBarFactory(fileObject) {
         let localHistory = historyList;
         const id = localHistory.length;
@@ -466,6 +554,10 @@ const Content = () => {
             setHistoryList(tempHistory);
         };
     }
+
+    /**
+     * Handles the file upload process
+     */
     const handleUpload = async () => {
         if (uploadList.length === 0) {
             setAlertMessage('No files selected');
@@ -502,6 +594,10 @@ const Content = () => {
         }
     };
 
+    /**
+     * Removes an item from the upload list
+     * @param {number} itemIndex - Index of the item to remove
+     */
     const handleDismiss = (itemIndex) => {
         setUploadList([
             ...uploadList.slice(0, itemIndex),
@@ -509,6 +605,13 @@ const Content = () => {
         ]);
     };
 
+    /**
+     * Renders a list of progress bars
+     * @param {Object} props - Component props
+     * @param {Array} props.list - List of items to render    /**
+     * Progress bar list component
+     * Displays upload progress for multiple files
+     */
     const List = ({list}) => (
         <>
             {list.map((item) => (
@@ -541,7 +644,7 @@ const Content = () => {
         >
             <SpaceBetween size="l">
                 {!viewingBucket ? (
-                    // Show bucket list
+                    // Bucket list view
                     <Container
                         header={
                             <Header variant="h2">
@@ -588,7 +691,7 @@ const Content = () => {
                         />
                     </Container>
                 ) : (
-                    // Show bucket contents
+                    // Bucket contents view
                     <>
                         <Container
                             header={
@@ -596,6 +699,7 @@ const Content = () => {
                                     variant="h2"
                                     actions={
                                         <div className="action-buttons">
+                                            {/* Navigation and action buttons */}
                                             {currentPath && (
                                                 <Button
                                                     onClick={goToParentFolder}
@@ -631,13 +735,18 @@ const Content = () => {
                                         </div>
                                     }
                                 >
+                                    {/* Breadcrumb navigation */}
                                     <BreadcrumbGroup
                                         items={[
-                                            { text: bucketName, href: '#', onClick: () => {
-                                                console.log('Navigating to bucket root');
-                                                setCurrentPath('');
-                                                listBucketContents('');
-                                            }},
+                                            { 
+                                                text: bucketName, 
+                                                href: '#', 
+                                                onClick: () => {
+                                                    console.log('Navigating to bucket root');
+                                                    setCurrentPath('');
+                                                    listBucketContents('');
+                                                }
+                                            },
                                             ...(currentPath ? currentPath.split('/').map((part, index, array) => ({
                                                 text: part,
                                                 href: '#',
@@ -651,8 +760,9 @@ const Content = () => {
                                         ]}
                                     />
                                 </Header>
-                                                            }
+                            }
                         >
+                            {/* Hidden file input elements */}
                             <input
                                 type="file"
                                 ref={fileInput}
@@ -670,6 +780,7 @@ const Content = () => {
                                 multiple
                             />
                             
+                            {/* Alert messages */}
                             {visibleAlert && (
                                 <Alert
                                     onDismiss={() => setVisibleAlert(false)}
@@ -682,12 +793,12 @@ const Content = () => {
                                 </Alert>
                             )}
 
+                            {/* Bucket navigation component */}
                             <BucketNavigation
                                 currentPath={currentPath}
                                 contents={bucketContents}
                                 onNavigate={(key, isFolder) => {
                                     if (isFolder) {
-                                        // Ensure clean path without trailing slashes or .keep
                                         const normalizedKey = key.replace(/\/\.keep$|\/$/, '');
                                         console.log('Navigating to folder:', normalizedKey);
                                         setCurrentPath(normalizedKey);
@@ -705,6 +816,7 @@ const Content = () => {
                                 onDelete={deleteFile}
                             />
 
+                            {/* Upload list and button */}
                             {uploadList.length > 0 && (
                                 <>
                                     <TokenGroup
@@ -720,6 +832,7 @@ const Content = () => {
                             )}
                         </Container>
 
+                        {/* Upload history container */}
                         <Container
                             header={
                                 <Header variant="h2">
@@ -736,8 +849,18 @@ const Content = () => {
     );
 };
 
+/**
+ * Main App Component
+ * Handles authentication and main layout
+ * @returns {JSX.Element} The main application component
+ */
 function App() {
     const [navigationOpen, setNavigationOpen] = useState(false);
+
+    /**
+     * Handles navbar item clicks
+     * @param {Event} e - Click event
+     */
     const navbarItemClick = e => {
         console.log(e);
         if (e.detail.id === 'signout') {
@@ -751,6 +874,7 @@ function App() {
         <Authenticator>
             {({signOut, user}) => (
                 <>
+                    {/* Top Navigation Bar */}
                     <div id="navbar" style={{fontSize: 'body-l !important', position: 'sticky', top: 0, zIndex: 1002}}>
                         <TopNavigation
                             identity={{
@@ -797,6 +921,8 @@ function App() {
                             }}
                         />
                     </div>
+
+                    {/* Main Application Layout */}
                     <AppLayout
                         content={<Content/>}
                         headerSelector='#navbar'
