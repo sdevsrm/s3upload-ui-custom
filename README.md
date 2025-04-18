@@ -18,8 +18,12 @@ Clone the source code repository using below command from your terminal and navi
 `git clone https://github.com/sdevsrm/s3upload-ui-custom.git`  
 `cd s3upload-ui-custom/`  
 
+<img width="657" alt="git clone" src="https://github.com/user-attachments/assets/f5c5db2e-adf3-46dd-b9de-d33212074043" />  
+
 Install AWS Amplify CLI using below command  
 `npm install -g @aws-amplify/cli`  
+
+<img width="1080" alt="aws amplify cli" src="https://github.com/user-attachments/assets/5f7e224f-3c69-4dc4-90b0-b1f37fe67b55" />  
 
 > [!NOTE]
 > If `npm` is not installed on your EC2 instance/application server, use the `sudo yum install npm` command to install it.  
@@ -36,6 +40,8 @@ Inside the root directory/project folder, initialize the project by entering bel
     &emsp;&emsp;Select the authentication method you want to use: **AWS profile**. Press Enter.  
     &emsp;&emsp;Please choose the profile you want to use: **default**. Press Enter.  
 
+<img width="1082" alt="amplify init" src="https://github.com/user-attachments/assets/467c9ddb-586d-48a2-962d-50f7f91f9057" />  
+
 > [!NOTE]
 > If there is no profile configured on your EC2 instance, you need to configure the access key and secret key of your AWS account and create a profile to proceed further.
 
@@ -46,6 +52,8 @@ Add the authentication component
 &emsp;&emsp;For Do you want to use the default authentication and security configuration?, select **Default Configuration**. Press enter.  
 &emsp;&emsp;For How do you want users to be able to sign in?, select **Username**. Press enter to confirm.  
 &emsp;&emsp;For Do you want to configure advanced settings? Select **No**, I am done.  
+
+<img width="1019" alt="amplify add auth" src="https://github.com/user-attachments/assets/f647a54a-df07-4953-af59-89783989e319" />  
 
 Add the storage component  
 `amplify add storage`
@@ -58,14 +66,15 @@ Add the storage component
 &emsp;&emsp;What kind of access do you want for Authenticated users? Use your arrow key to pick **create/update/delete** and then hit the space bar to select it. Select enter to confirm.  
 &emsp;&emsp;Do you want to add Lambda Trigger for your S3 Bucket? Select **No** and press enter to confirm.  
 
-> Select: Content (Images, audio, video, etc.)  
-> Provide a label for this category or use the suggested one from the wizard.  
-> Select the option create/update/delete from the list of actions  
+<img width="1006" alt="amplify add storage" src="https://github.com/user-attachments/assets/f84791c2-0c5f-44c6-972a-7dea82e6cbc0" />  
+
 
 Add the application hosting  
 `amplify hosting add`  
 
-> Select Amazon CloudFront and S3. Define a new unique bucket name or use the suggested one.
+> Select Amazon CloudFront and S3. Define a new unique bucket name or use the suggested one.  
+
+<img width="679" alt="amplify hosting add" src="https://github.com/user-attachments/assets/655c3783-dfe8-4d86-a4e5-8382e047de8d" />  
 
 Now, you can build the web app (front-end)
 
@@ -74,6 +83,11 @@ npm install
 amplify push
 amplify publish
 ```
+<img width="1133" alt="npm install" src="https://github.com/user-attachments/assets/de01cd62-92c5-4e12-bc58-eaf784254384" />  
+
+<img width="926" alt="amplify push" src="https://github.com/user-attachments/assets/39629769-a77c-4f85-a020-cb92057a4153" />  
+
+<img width="540" alt="amplify publish" src="https://github.com/user-attachments/assets/f5992b88-eac1-44d6-b36a-186c48609363" />  
 
 The output of the `amplify publish` if all the deployment was done correctly is a URL
 This URL is the web application URl where you can open from the browser to access your application.
@@ -87,7 +101,7 @@ Comment or remove the following block:
 display: none;
 }
 ```
-> After this change you need to re-run `amplify publish` or `amplify publish -c`
+> After this change or if you make any changes to `App.css` or 'App.js` file you need to re-run `amplify publish` or `amplify publish -c`
 
 
 ### Prerequisites
