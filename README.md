@@ -101,7 +101,7 @@ Comment or remove the following block:
 display: none;
 }
 ```
-> After this change or if you make any changes to `App.css` or 'App.js` file you need to re-run `amplify publish` or `amplify publish -c`
+> After this change or if you make any changes to `App.css` or `App.js` file you need to re-run `amplify publish` or `amplify publish -c`
 
 
 ### Prerequisites
