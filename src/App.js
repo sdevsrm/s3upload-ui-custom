@@ -4,24 +4,13 @@ import '@aws-amplify/ui-react/styles.css';
 import './App.css';
 import awsconfig from './aws-exports';
 
-// Configure Amplify BEFORE any StorageBrowser imports
-Amplify.configure({
-  Auth: {
-    Cognito: {
-      userPoolId: awsconfig.aws_user_pools_id,
-      userPoolClientId: awsconfig.aws_user_pools_web_client_id,
-      identityPoolId: awsconfig.aws_cognito_identity_pool_id,
-    }
-  },
-  Storage: {
-    S3: {
-      bucket: awsconfig.aws_user_files_s3_bucket,
-      region: awsconfig.aws_user_files_s3_bucket_region,
-    }
-  }
+// Amplify v6 accepts v5 aws-exports format directly
+// Must configure BEFORE StorageBrowser loads
+Amplify.configure(awsconfig, {
+  ssr: false
 });
 
-// Now safe to import StorageBrowser (it calls createStorageBrowser at module load)
+// Lazy require to ensure Amplify is configured first
 const { StorageBrowser } = require('./storage/StorageBrowserConfig');
 const AnalyzeVideoView = require('./storage/AnalyzeVideoView').default;
 const { Authenticator } = require('@aws-amplify/ui-react');
