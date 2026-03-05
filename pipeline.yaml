@@ -132,8 +132,10 @@ Resources:
                   if not key.startswith('videos/'):
                       continue
                   upload_id = key.replace('/', '_')
-                  # Sanitize: Step Functions names allow only letters, numbers, - and _
-                  exec_name = ''.join(c if c.isalnum() or c in '-_' else '_' for c in upload_id)[:80]
+                  # Sanitize + append timestamp so re-uploads always start a fresh execution
+                  import time as _time
+                  safe = ''.join(c if c.isalnum() or c in '-_' else '_' for c in upload_id)
+                  exec_name = f"{safe[:72]}_{int(_time.time())}"
                   ddb.put_item(Item={
                       'uploadId': upload_id,
                       'status': 'PROCESSING',
@@ -356,6 +358,7 @@ Resources:
               results_key = f"analysis/{upload_id}/results.json"
               s3.put_object(Bucket=bucket, Key=results_key,
                             Body=json.dumps(result, indent=2), ContentType='application/json')
+              # Store only scalar summary in DynamoDB — segments/floats stay in S3
               ddb.update_item(Key={'uploadId': upload_id},
                   UpdateExpression='SET #s=:s, summary=:sum, resultsKey=:rk, completedAt=:ca, #t=:ttl',
                   ExpressionAttributeNames={'#s': 'status', '#t': 'ttl'},
