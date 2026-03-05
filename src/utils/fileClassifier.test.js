@@ -1,8 +1,14 @@
 import { classifyByMimeAndName, buildS3KeyFromName, extractFileMetadata } from '../utils/fileClassifier';
 
 // Mock date to 2026-03-05 for deterministic key paths
-const MOCK_DATE = new Date('2026-03-05T00:00:00Z');
-jest.spyOn(global, 'Date').mockImplementation(() => MOCK_DATE);
+beforeAll(() => {
+  jest.useFakeTimers();
+  jest.setSystemTime(new Date('2026-03-05T00:00:00Z'));
+});
+
+afterAll(() => {
+  jest.useRealTimers();
+});
 
 describe('classifyByMimeAndName', () => {
   test.each([
