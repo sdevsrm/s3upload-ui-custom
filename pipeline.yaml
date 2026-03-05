@@ -1,0 +1,669 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  S3 Upload v2 - Unified Analysis Pipeline.
+  Video: FFmpeg silence detection + Nova Pro frame analysis (Step Functions).
+  Image: Nova Pro description.
+  Audio: Amazon Transcribe.
+  Document: Textract + Bedrock summarization.
+  All results written to S3 analysis/{uploadId}/results.json and shared DynamoDB table.
+
+Parameters:
+  UploadBucketName:
+    Type: String
+    Default: s3uploadv281d32340117947dd82b04e7880362a5156621-dev
+    Description: S3 upload bucket created by Amplify
+  BedrockModelId:
+    Type: String
+    Default: amazon.nova-pro-v1:0
+    AllowedValues:
+      - amazon.nova-pro-v1:0
+      - amazon.nova-lite-v1:0
+
+Resources:
+
+  # ─── DynamoDB: shared results table for all media types ───
+  AnalysisTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub '${AWS::StackName}-analysis'
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: uploadId
+          AttributeType: S
+      KeySchema:
+        - AttributeName: uploadId
+          KeyType: HASH
+      TimeToLiveSpecification:
+        AttributeName: ttl
+        Enabled: true
+
+  # ─── IAM Role: shared by all Lambdas ───
+  LambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: PipelineAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: [s3:GetObject, s3:PutObject, s3:ListBucket]
+                Resource:
+                  - !Sub 'arn:aws:s3:::${UploadBucketName}'
+                  - !Sub 'arn:aws:s3:::${UploadBucketName}/*'
+              - Effect: Allow
+                Action: [dynamodb:PutItem, dynamodb:GetItem, dynamodb:UpdateItem]
+                Resource: !GetAtt AnalysisTable.Arn
+              - Effect: Allow
+                Action: bedrock:InvokeModel
+                Resource: !Sub 'arn:aws:bedrock:${AWS::Region}::foundation-model/${BedrockModelId}'
+              - Effect: Allow
+                Action: [transcribe:StartTranscriptionJob, transcribe:GetTranscriptionJob]
+                Resource: '*'
+              - Effect: Allow
+                Action: [textract:DetectDocumentText, textract:AnalyzeDocument]
+                Resource: '*'
+              - Effect: Allow
+                Action: states:StartExecution
+                Resource: '*'
+
+  # ─── IAM Role: Step Functions ───
+  StepFunctionsRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: states.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: InvokeLambda
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: lambda:InvokeFunction
+                Resource:
+                  - !GetAtt VideoAudioAnalyzerFunction.Arn
+                  - !GetAtt VideoNovaAnalyzerFunction.Arn
+                  - !GetAtt VideoResultsAggregatorFunction.Arn
+
+
+  # ════════════════════════════════════════════════════
+  # VIDEO PIPELINE (Step Functions)
+  # ════════════════════════════════════════════════════
+
+  # ─── Lambda: Video Trigger → starts Step Functions ───
+  VideoTriggerFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub '${AWS::StackName}-video-trigger'
+      Runtime: python3.12
+      Handler: index.handler
+      Role: !GetAtt LambdaRole.Arn
+      Timeout: 30
+      MemorySize: 128
+      Environment:
+        Variables:
+          STATE_MACHINE_ARN: !GetAtt VideoPipeline.Arn
+          ANALYSIS_TABLE: !Ref AnalysisTable
+      Code:
+        ZipFile: |
+          import json, os, urllib.parse, boto3
+          sfn = boto3.client('stepfunctions')
+          ddb = boto3.resource('dynamodb').Table(os.environ['ANALYSIS_TABLE'])
+
+          def handler(event, context):
+              for record in event['Records']:
+                  bucket = record['s3']['bucket']['name']
+                  key = urllib.parse.unquote_plus(record['s3']['object']['key'])
+                  size = record['s3']['object'].get('size', 0)
+                  if not key.startswith('videos/'):
+                      continue
+                  upload_id = key.replace('/', '_')
+                  # Sanitize: Step Functions names allow only letters, numbers, - and _
+                  exec_name = ''.join(c if c.isalnum() or c in '-_' else '_' for c in upload_id)[:80]
+                  ddb.put_item(Item={
+                      'uploadId': upload_id,
+                      'status': 'PROCESSING',
+                      's3Key': key,
+                      'bucket': bucket,
+                      'fileSize': size
+                  })
+                  sfn.start_execution(
+                      stateMachineArn=os.environ['STATE_MACHINE_ARN'],
+                      name=exec_name,
+                      input=json.dumps({'uploadId': upload_id, 'bucket': bucket,
+                                        's3Key': key, 'fileSize': size})
+                  )
+              return {'statusCode': 200}
+
+  VideoTriggerPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref VideoTriggerFunction
+      Action: lambda:InvokeFunction
+      Principal: s3.amazonaws.com
+      SourceArn: !Sub 'arn:aws:s3:::${UploadBucketName}'
+
+  # ─── Lambda: FFmpeg silence detection ───
+  VideoAudioAnalyzerFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub '${AWS::StackName}-video-audio-analyzer'
+      Runtime: python3.12
+      Handler: index.handler
+      Role: !GetAtt LambdaRole.Arn
+      Timeout: 900
+      MemorySize: 3008
+      # FFmpeg layer: arn:aws:lambda:us-east-1:039449675377:layer:ffmpeg:1
+      Layers:
+        - arn:aws:lambda:us-east-1:039449675377:layer:ffmpeg:1
+      Environment:
+        Variables:
+          BUCKET: !Ref UploadBucketName
+      Code:
+        ZipFile: |
+          import json, os, subprocess, re, boto3
+
+          s3 = boto3.client('s3')
+          FFMPEG = '/opt/bin/ffmpeg'
+          FFPROBE = '/opt/bin/ffprobe'
+
+          def handler(event, context):
+              bucket = event['bucket']
+              key = event['s3Key']
+              local_path = f'/tmp/{os.path.basename(key)}'
+              s3.download_file(bucket, key, local_path)
+
+              probe = subprocess.run(
+                  [FFPROBE, '-v', 'error', '-show_entries', 'format=duration',
+                   '-of', 'json', local_path], capture_output=True, text=True)
+              duration = float(json.loads(probe.stdout)['format']['duration'])
+
+              result = subprocess.run(
+                  [FFMPEG, '-i', local_path, '-af',
+                   'silencedetect=noise=-30dB:d=2', '-f', 'null', '-'],
+                  capture_output=True, text=True)
+
+              silence_starts = [float(x) for x in re.findall(r'silence_start: ([\d.]+)', result.stderr)]
+              silence_ends   = [float(x) for x in re.findall(r'silence_end: ([\d.]+)',   result.stderr)]
+
+              segments, pos = [], 0.0
+              for s, e in zip(silence_starts, silence_ends):
+                  if pos < s:
+                      segments.append({'start': round(pos,2), 'end': round(s,2),
+                                       'has_audio': True,  'duration': round(s-pos,2)})
+                  segments.append({'start': round(s,2), 'end': round(e,2),
+                                   'has_audio': False, 'duration': round(e-s,2)})
+                  pos = e
+              if pos < duration:
+                  segments.append({'start': round(pos,2), 'end': round(duration,2),
+                                   'has_audio': True, 'duration': round(duration-pos,2)})
+
+              os.remove(local_path)
+              return {**event, 'duration': duration, 'segments': segments,
+                      'silentDuration': sum(s['duration'] for s in segments if not s['has_audio']),
+                      'audioDuration':  sum(s['duration'] for s in segments if s['has_audio'])}
+
+  # ─── Lambda: Nova Pro frame analysis ───
+  VideoNovaAnalyzerFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub '${AWS::StackName}-video-nova-analyzer'
+      Runtime: python3.12
+      Handler: index.handler
+      Role: !GetAtt LambdaRole.Arn
+      Timeout: 900
+      MemorySize: 3008
+      Layers:
+        - arn:aws:lambda:us-east-1:039449675377:layer:ffmpeg:1
+      Environment:
+        Variables:
+          MODEL_ID: !Ref BedrockModelId
+          ANALYSIS_TABLE: !Ref AnalysisTable
+          BUCKET: !Ref UploadBucketName
+      Code:
+        ZipFile: |
+          import json, os, base64, subprocess, tempfile, time, boto3
+
+          bedrock = boto3.client('bedrock-runtime')
+          s3 = boto3.client('s3')
+          ddb = boto3.resource('dynamodb').Table(os.environ['ANALYSIS_TABLE'])
+          FFMPEG = '/opt/bin/ffmpeg'
+          CLASSIFICATIONS = ['approach','interaction','conversation','processing','departure','idle','other']
+
+          def extract_frame(bucket, s3_key, timestamp):
+              with tempfile.TemporaryDirectory() as tmp:
+                  video_path = os.path.join(tmp, 'video.mp4')
+                  frame_path = os.path.join(tmp, 'frame.jpg')
+                  s3.download_file(bucket, s3_key, video_path)
+                  subprocess.run([FFMPEG, '-ss', str(timestamp), '-i', video_path,
+                                  '-frames:v', '1', '-q:v', '5', frame_path, '-y'],
+                                 capture_output=True, check=True)
+                  with open(frame_path, 'rb') as f:
+                      return base64.b64encode(f.read()).decode()
+
+          def handler(event, context):
+              segments = event['segments']
+              s3_key, bucket = event['s3Key'], event['bucket']
+              model_id = os.environ['MODEL_ID']
+              audio_segs = [s for s in segments if s['has_audio']]
+              total, completed = len(audio_segs), 0
+
+              ddb.update_item(Key={'uploadId': event['uploadId']},
+                  UpdateExpression='SET segmentsComplete=:c, segmentsTotal=:t, startedAt=:s',
+                  ExpressionAttributeValues={':c': 0, ':t': total, ':s': int(time.time())})
+
+              analyzed = []
+              for seg in segments:
+                  if seg['has_audio']:
+                      mid = (seg['start'] + seg['end']) / 2
+                      prompt = (f"Frame from {seg['start']:.1f}s–{seg['end']:.1f}s. "
+                                f"Describe what is happening. Classify as one of: {', '.join(CLASSIFICATIONS)}. "
+                                f"Is this actionable? "
+                                f'Respond in JSON: {{"description": str, "classification": str, "actionable": bool}}')
+                      try:
+                          frame_b64 = extract_frame(bucket, s3_key, mid)
+                          resp = bedrock.invoke_model(
+                              modelId=model_id, contentType='application/json', accept='application/json',
+                              body=json.dumps({"messages": [{"role": "user", "content": [
+                                  {"image": {"format": "jpeg", "source": {"bytes": frame_b64}}},
+                                  {"text": prompt}]}],
+                                  "inferenceConfig": {"maxTokens": 512}}))
+                          body = json.loads(resp['body'].read())
+                          analysis = json.loads(body['output']['message']['content'][0]['text'])
+                          seg['description']    = analysis.get('description', 'Analysis unavailable')
+                          seg['classification'] = analysis.get('classification', 'other')
+                          seg['actionable']     = analysis.get('actionable', True)
+                      except Exception as e:
+                          seg['description'] = f'Analysis failed: {str(e)}'
+                          seg['classification'] = 'other'
+                          seg['actionable'] = True
+
+                      completed += 1
+                      ddb.update_item(Key={'uploadId': event['uploadId']},
+                          UpdateExpression='SET segmentsComplete=:c',
+                          ExpressionAttributeValues={':c': completed})
+                      s3.put_object(Bucket=bucket,
+                          Key=f"analysis/{event['uploadId']}/progress.json",
+                          Body=json.dumps({'segmentsComplete': completed, 'segmentsTotal': total,
+                                           'status': 'PROCESSING'}),
+                          ContentType='application/json')
+                  else:
+                      seg['description'] = 'No audio detected - silent segment'
+                      seg['classification'] = 'idle'
+                      seg['actionable'] = False
+                  analyzed.append(seg)
+
+              return {**event, 'segments': analyzed}
+
+  # ─── Lambda: Results Aggregator ───
+  VideoResultsAggregatorFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub '${AWS::StackName}-video-results-aggregator'
+      Runtime: python3.12
+      Handler: index.handler
+      Role: !GetAtt LambdaRole.Arn
+      Timeout: 60
+      MemorySize: 256
+      Environment:
+        Variables:
+          ANALYSIS_TABLE: !Ref AnalysisTable
+          BUCKET: !Ref UploadBucketName
+      Code:
+        ZipFile: |
+          import json, os, time, boto3
+
+          s3  = boto3.client('s3')
+          ddb = boto3.resource('dynamodb').Table(os.environ['ANALYSIS_TABLE'])
+
+          def handler(event, context):
+              upload_id = event['uploadId']
+              segments  = event['segments']
+              duration  = event['duration']
+              bucket    = os.environ['BUCKET']
+              actionable_dur = sum(s['duration'] for s in segments if s.get('actionable'))
+
+              result = {
+                  'uploadId': upload_id, 's3Key': event['s3Key'],
+                  'duration': duration, 'segments': segments,
+                  'summary': {
+                      'totalDuration':      f"{duration:.1f}s",
+                      'actionableDuration': f"{actionable_dur:.1f}s",
+                      'actionablePercent':  f"{(actionable_dur/duration*100):.0f}%",
+                      'silentDuration':     f"{event.get('silentDuration',0):.1f}s",
+                      'totalSegments':      len(segments),
+                      'actionableSegments': sum(1 for s in segments if s.get('actionable'))
+                  },
+                  'status': 'COMPLETE',
+                  'completedAt': int(time.time()),
+                  'ttl': int(time.time()) + 90 * 86400
+              }
+
+              results_key = f"analysis/{upload_id}/results.json"
+              s3.put_object(Bucket=bucket, Key=results_key,
+                            Body=json.dumps(result, indent=2), ContentType='application/json')
+              ddb.update_item(Key={'uploadId': upload_id},
+                  UpdateExpression='SET #s=:s, summary=:sum, resultsKey=:rk, completedAt=:ca, #t=:ttl',
+                  ExpressionAttributeNames={'#s': 'status', '#t': 'ttl'},
+                  ExpressionAttributeValues={':s': 'COMPLETE', ':sum': result['summary'],
+                      ':rk': results_key, ':ca': result['completedAt'], ':ttl': result['ttl']})
+              return result
+
+  # ─── Step Functions: Video Analysis Pipeline ───
+  VideoPipeline:
+    Type: AWS::StepFunctions::StateMachine
+    Properties:
+      StateMachineName: !Sub '${AWS::StackName}-video-pipeline'
+      RoleArn: !GetAtt StepFunctionsRole.Arn
+      DefinitionString: !Sub |
+        {
+          "Comment": "Video: FFmpeg silence detection → Nova Pro frame analysis → aggregate results",
+          "StartAt": "AnalyzeAudio",
+          "States": {
+            "AnalyzeAudio": {
+              "Type": "Task",
+              "Resource": "${VideoAudioAnalyzerFunction.Arn}",
+              "Next": "HasAudioSegments",
+              "Catch": [{"ErrorEquals": ["States.ALL"], "Next": "AnalysisFailed"}]
+            },
+            "HasAudioSegments": {
+              "Type": "Choice",
+              "Choices": [{"Variable": "$.audioDuration", "NumericGreaterThan": 0, "Next": "AnalyzeScenes"}],
+              "Default": "AggregateResults"
+            },
+            "AnalyzeScenes": {
+              "Type": "Task",
+              "Resource": "${VideoNovaAnalyzerFunction.Arn}",
+              "Next": "AggregateResults",
+              "Catch": [{"ErrorEquals": ["States.ALL"], "Next": "AggregateResults"}]
+            },
+            "AggregateResults": {
+              "Type": "Task",
+              "Resource": "${VideoResultsAggregatorFunction.Arn}",
+              "End": true
+            },
+            "AnalysisFailed": {
+              "Type": "Fail",
+              "Error": "AnalysisError",
+              "Cause": "Audio analysis failed"
+            }
+          }
+        }
+
+
+  # ════════════════════════════════════════════════════
+  # IMAGE PIPELINE (direct S3 trigger → Nova Pro)
+  # ════════════════════════════════════════════════════
+
+  ImageAnalyzerFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub '${AWS::StackName}-image-analyzer'
+      Runtime: python3.12
+      Handler: index.handler
+      Role: !GetAtt LambdaRole.Arn
+      Timeout: 120
+      MemorySize: 512
+      Environment:
+        Variables:
+          MODEL_ID: !Ref BedrockModelId
+          ANALYSIS_TABLE: !Ref AnalysisTable
+          BUCKET: !Ref UploadBucketName
+      Code:
+        ZipFile: |
+          import json, os, time, base64, urllib.parse, boto3
+
+          s3      = boto3.client('s3')
+          bedrock = boto3.client('bedrock-runtime')
+          ddb     = boto3.resource('dynamodb').Table(os.environ['ANALYSIS_TABLE'])
+          IMAGE_EXTS   = {'.jpg','.jpeg','.png','.gif','.webp','.bmp'}
+          EXT_TO_FORMAT = {'.jpg':'jpeg','.jpeg':'jpeg','.png':'png',
+                           '.gif':'gif','.webp':'webp','.bmp':'bmp'}
+
+          def handler(event, context):
+              for record in event.get('Records', []):
+                  bucket = record['s3']['bucket']['name']
+                  key    = urllib.parse.unquote_plus(record['s3']['object']['key'])
+                  if not key.startswith('images/'):
+                      continue
+                  ext = os.path.splitext(key)[1].lower()
+                  if ext not in IMAGE_EXTS:
+                      continue
+                  upload_id  = key.replace('/', '_')
+                  img_format = EXT_TO_FORMAT.get(ext, 'jpeg')
+                  try:
+                      img_b64 = base64.b64encode(
+                          s3.get_object(Bucket=bucket, Key=key)['Body'].read()).decode()
+                      resp = bedrock.invoke_model(
+                          modelId=os.environ['MODEL_ID'],
+                          contentType='application/json', accept='application/json',
+                          body=json.dumps({"messages": [{"role": "user", "content": [
+                              {"image": {"format": img_format, "source": {"bytes": img_b64}}},
+                              {"text": ('Describe this image. Respond in JSON: '
+                                        '{"description": str, "subjects": [str], '
+                                        '"setting": str, "tags": [str], "hasText": bool}')}
+                          ]}], "inferenceConfig": {"maxTokens": 1024}}))
+                      body     = json.loads(resp['body'].read())
+                      analysis = json.loads(body['output']['message']['content'][0]['text'])
+                      status   = 'COMPLETE'
+                  except Exception as e:
+                      analysis = {'error': str(e)}
+                      status   = 'FAILED'
+                  result = {'uploadId': upload_id, 's3Key': key, 'type': 'image',
+                            'analysis': analysis, 'status': status,
+                            'completedAt': int(time.time()),
+                            'ttl': int(time.time()) + 90 * 86400}
+                  results_key = f'analysis/{upload_id}/results.json'
+                  s3.put_object(Bucket=bucket, Key=results_key,
+                                Body=json.dumps(result, indent=2), ContentType='application/json')
+                  ddb.put_item(Item={**result, 'resultsKey': results_key})
+              return {'statusCode': 200}
+
+  ImageAnalyzerPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref ImageAnalyzerFunction
+      Action: lambda:InvokeFunction
+      Principal: s3.amazonaws.com
+      SourceArn: !Sub 'arn:aws:s3:::${UploadBucketName}'
+
+  # ════════════════════════════════════════════════════
+  # AUDIO PIPELINE (direct S3 trigger → Transcribe)
+  # ════════════════════════════════════════════════════
+
+  AudioAnalyzerFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub '${AWS::StackName}-audio-analyzer'
+      Runtime: python3.12
+      Handler: index.handler
+      Role: !GetAtt LambdaRole.Arn
+      Timeout: 900
+      MemorySize: 256
+      Environment:
+        Variables:
+          ANALYSIS_TABLE: !Ref AnalysisTable
+          BUCKET: !Ref UploadBucketName
+      Code:
+        ZipFile: |
+          import json, os, time, uuid, urllib.parse, boto3
+
+          s3         = boto3.client('s3')
+          transcribe = boto3.client('transcribe')
+          ddb        = boto3.resource('dynamodb').Table(os.environ['ANALYSIS_TABLE'])
+          AUDIO_EXTS    = {'.mp3','.wav','.aac','.flac','.ogg','.m4a','.opus'}
+          EXT_TO_FORMAT = {'.mp3':'mp3','.wav':'wav','.aac':'aac',
+                           '.flac':'flac','.ogg':'ogg','.m4a':'mp4','.opus':'ogg'}
+
+          def handler(event, context):
+              for record in event.get('Records', []):
+                  bucket = record['s3']['bucket']['name']
+                  key    = urllib.parse.unquote_plus(record['s3']['object']['key'])
+                  if not key.startswith('audio/'):
+                      continue
+                  ext = os.path.splitext(key)[1].lower()
+                  if ext not in AUDIO_EXTS:
+                      continue
+                  upload_id    = key.replace('/', '_')
+                  media_format = EXT_TO_FORMAT.get(ext, 'mp3')
+                  job_name     = f"s3upload-{upload_id[:60]}-{str(uuid.uuid4())[:8]}"
+                  try:
+                      transcribe.start_transcription_job(
+                          TranscriptionJobName=job_name,
+                          Media={'MediaFileUri': f's3://{bucket}/{key}'},
+                          MediaFormat=media_format, IdentifyLanguage=True,
+                          OutputBucketName=bucket,
+                          OutputKey=f'analysis/{upload_id}/transcript-raw.json')
+                      deadline = time.time() + 840
+                      while time.time() < deadline:
+                          resp       = transcribe.get_transcription_job(TranscriptionJobName=job_name)
+                          job_status = resp['TranscriptionJob']['TranscriptionJobStatus']
+                          if job_status == 'COMPLETED':
+                              break
+                          elif job_status == 'FAILED':
+                              raise Exception(resp['TranscriptionJob'].get('FailureReason', 'Failed'))
+                          time.sleep(15)
+                      raw             = s3.get_object(Bucket=bucket, Key=f'analysis/{upload_id}/transcript-raw.json')
+                      transcript_data = json.loads(raw['Body'].read())
+                      transcript_text = transcript_data['results']['transcripts'][0]['transcript']
+                      analysis = {'transcript': transcript_text,
+                                  'language':   resp['TranscriptionJob'].get('LanguageCode', 'unknown'),
+                                  'wordCount':  len(transcript_text.split()),
+                                  'items':      transcript_data['results'].get('items', [])}
+                      status = 'COMPLETE'
+                  except Exception as e:
+                      analysis = {'error': str(e)}
+                      status   = 'FAILED'
+                  result = {'uploadId': upload_id, 's3Key': key, 'type': 'audio',
+                            'analysis': analysis, 'status': status,
+                            'completedAt': int(time.time()),
+                            'ttl': int(time.time()) + 90 * 86400}
+                  results_key = f'analysis/{upload_id}/results.json'
+                  s3.put_object(Bucket=bucket, Key=results_key,
+                                Body=json.dumps(result, indent=2), ContentType='application/json')
+                  ddb.put_item(Item={**result, 'resultsKey': results_key})
+              return {'statusCode': 200}
+
+  AudioAnalyzerPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref AudioAnalyzerFunction
+      Action: lambda:InvokeFunction
+      Principal: s3.amazonaws.com
+      SourceArn: !Sub 'arn:aws:s3:::${UploadBucketName}'
+
+  # ════════════════════════════════════════════════════
+  # DOCUMENT PIPELINE (direct S3 trigger → Textract + Bedrock)
+  # ════════════════════════════════════════════════════
+
+  DocumentAnalyzerFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub '${AWS::StackName}-document-analyzer'
+      Runtime: python3.12
+      Handler: index.handler
+      Role: !GetAtt LambdaRole.Arn
+      Timeout: 300
+      MemorySize: 512
+      Environment:
+        Variables:
+          MODEL_ID: !Ref BedrockModelId
+          ANALYSIS_TABLE: !Ref AnalysisTable
+          BUCKET: !Ref UploadBucketName
+      Code:
+        ZipFile: |
+          import json, os, time, urllib.parse, boto3
+
+          s3       = boto3.client('s3')
+          textract = boto3.client('textract')
+          bedrock  = boto3.client('bedrock-runtime')
+          ddb      = boto3.resource('dynamodb').Table(os.environ['ANALYSIS_TABLE'])
+          DOC_EXTS = {'.pdf','.png','.jpg','.jpeg','.tiff'}
+
+          def handler(event, context):
+              for record in event.get('Records', []):
+                  bucket = record['s3']['bucket']['name']
+                  key    = urllib.parse.unquote_plus(record['s3']['object']['key'])
+                  if not key.startswith('documents/'):
+                      continue
+                  ext = os.path.splitext(key)[1].lower()
+                  if ext not in DOC_EXTS:
+                      continue
+                  upload_id = key.replace('/', '_')
+                  try:
+                      tx_resp  = textract.detect_document_text(
+                          Document={'S3Object': {'Bucket': bucket, 'Name': key}})
+                      lines    = [b['Text'] for b in tx_resp['Blocks'] if b['BlockType'] == 'LINE']
+                      text     = '\n'.join(lines)
+                      pages    = len(set(b.get('Page', 1) for b in tx_resp['Blocks']))
+                      prompt   = (f"Summarize this document. Respond in JSON: "
+                                  f'{{\"summary\": str, \"keyTopics\": [str], '
+                                  f'\"actionItems\": [str], \"documentType\": str}}\n\n{text[:8000]}')
+                      br_resp  = bedrock.invoke_model(
+                          modelId=os.environ['MODEL_ID'],
+                          contentType='application/json', accept='application/json',
+                          body=json.dumps({"messages": [{"role": "user",
+                              "content": [{"text": prompt}]}],
+                              "inferenceConfig": {"maxTokens": 1024}}))
+                      br_body  = json.loads(br_resp['body'].read())
+                      summary  = json.loads(br_body['output']['message']['content'][0]['text'])
+                      analysis = {'extractedText': text, 'pageCount': pages,
+                                  'wordCount': len(text.split()),
+                                  'summary':     summary.get('summary', ''),
+                                  'keyTopics':   summary.get('keyTopics', []),
+                                  'actionItems': summary.get('actionItems', []),
+                                  'documentType':summary.get('documentType', 'unknown')}
+                      status = 'COMPLETE'
+                  except Exception as e:
+                      analysis = {'error': str(e)}
+                      status   = 'FAILED'
+                  result = {'uploadId': upload_id, 's3Key': key, 'type': 'document',
+                            'analysis': analysis, 'status': status,
+                            'completedAt': int(time.time()),
+                            'ttl': int(time.time()) + 90 * 86400}
+                  results_key = f'analysis/{upload_id}/results.json'
+                  s3.put_object(Bucket=bucket, Key=results_key,
+                                Body=json.dumps(result, indent=2), ContentType='application/json')
+                  ddb.put_item(Item={**result, 'resultsKey': results_key})
+              return {'statusCode': 200}
+
+  DocumentAnalyzerPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref DocumentAnalyzerFunction
+      Action: lambda:InvokeFunction
+      Principal: s3.amazonaws.com
+      SourceArn: !Sub 'arn:aws:s3:::${UploadBucketName}'
+
+Outputs:
+  AnalysisTableName:
+    Value: !Ref AnalysisTable
+    Description: Shared DynamoDB table for all media analysis results
+  VideoTriggerArn:
+    Value: !GetAtt VideoTriggerFunction.Arn
+  ImageAnalyzerArn:
+    Value: !GetAtt ImageAnalyzerFunction.Arn
+  AudioAnalyzerArn:
+    Value: !GetAtt AudioAnalyzerFunction.Arn
+  DocumentAnalyzerArn:
+    Value: !GetAtt DocumentAnalyzerFunction.Arn
+  UploadBucket:
+    Value: !Ref UploadBucketName
+    Description: S3 bucket — content routed to images/ videos/ audio/ documents/ archives/ other/
+  ResultsPath:
+    Value: !Sub 's3://${UploadBucketName}/analysis/{uploadId}/results.json'
+    Description: Analysis results path pattern (uploadId = s3Key with / replaced by _)
