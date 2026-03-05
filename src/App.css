@@ -1,7 +1,4 @@
-/* Hide Cognito sign-up tab */
-.amplify-tabs {
-  display: none;
-}
+/* Sign-up is disabled via hideSignUp prop on Authenticator */
 
 body {
   margin: 0;

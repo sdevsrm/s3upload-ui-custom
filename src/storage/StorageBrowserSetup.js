@@ -6,7 +6,7 @@ import {
   defaultHandlers,
 } from '@aws-amplify/ui-react-storage/browser';
 import '@aws-amplify/ui-react-storage/styles.css';
-import { buildS3KeyFromName } from '../utils/fileClassifier';
+import { buildS3KeyFromName, extractFileMetadata } from '../utils/fileClassifier';
 import { Button, Flex, Text, Loader, Message } from '@aws-amplify/ui-react';
 
 // --- Custom upload: content-type routing ---
@@ -16,9 +16,10 @@ const contentRoutedUpload = {
     const { data, ...rest } = input;
     const fileName = (data.key || '').split('/').pop() || data.key;
     const routedKey = buildS3KeyFromName(fileName, data.type || '');
+    const metadata = data.file ? extractFileMetadata(data.file) : {};
     return defaultHandlers.upload({
       ...rest,
-      data: { ...data, key: routedKey },
+      data: { ...data, key: routedKey, metadata },
     });
   },
 };

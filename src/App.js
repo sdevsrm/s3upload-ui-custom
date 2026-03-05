@@ -17,7 +17,7 @@ const StorageBrowserWrapper = React.lazy(() =>
 
 function App() {
   return (
-    <Authenticator>
+    <Authenticator hideSignUp={true}>
       {({ signOut, user }) => (
         <div className="app-container">
           <header className="app-header">
