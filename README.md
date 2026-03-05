@@ -213,9 +213,13 @@ Clone the source code repository using below command from your terminal and navi
 
 `cd s3upload-ui-custom/`
 
+![git clone](https://github.com/user-attachments/assets/f5c5db2e-adf3-46dd-b9de-d33212074043)
+
 Install AWS Amplify CLI using below command
 
 `npm install -g @aws-amplify/cli`
+
+![aws amplify cli](https://github.com/user-attachments/assets/5f7e224f-3c69-4dc4-90b0-b1f37fe67b55)
 
 > [!NOTE]
 > If `npm` is not installed on your EC2 instance/application server, use the `sudo yum install npm` command to install it.
@@ -232,6 +236,8 @@ Initialize the project with the above configuration: **Yes**. Press enter.
 Select the authentication method you want to use: **AWS profile**. Press Enter.
 Please choose the profile you want to use: **default**. Press Enter.
 
+![amplify init](https://github.com/user-attachments/assets/467c9ddb-586d-48a2-962d-50f7f91f9057)
+
 > [!NOTE]
 > If there is no profile configured on your EC2 instance, you need to configure the access key and secret key of your AWS account and create a profile to proceed further.
 
@@ -243,6 +249,8 @@ Select the following parameters:
 For Do you want to use the default authentication and security configuration?, select **Default Configuration**. Press enter.
 For How do you want users to be able to sign in?, select **Username**. Press enter to confirm.
 For Do you want to configure advanced settings? Select **No**, I am done.
+
+![amplify add auth](https://github.com/user-attachments/assets/f647a54a-df07-4953-af59-89783989e319)
 
 Add the storage component
 
@@ -256,11 +264,15 @@ Who should have access: Select **Auth users only**, use arrow key to move betwee
 What kind of access do you want for Authenticated users? Use your arrow key to pick **create/update/delete** and then hit the space bar to select it. Select enter to confirm.
 Do you want to add Lambda Trigger for your S3 Bucket? Select **No** and press enter to confirm.
 
+![amplify add storage](https://github.com/user-attachments/assets/f84791c2-0c5f-44c6-972a-7dea82e6cbc0)
+
 Add the application hosting
 
 `amplify hosting add`
 
 > Select Amazon CloudFront and S3. Define a new unique bucket name or use the suggested one.
+
+![amplify hosting add](https://github.com/user-attachments/assets/655c3783-dfe8-4d86-a4e5-8382e047de8d)
 
 Now, you can build the web app (front-end)
 
@@ -269,6 +281,10 @@ npm install
 amplify push
 amplify publish
 ```
+
+![npm install](https://github.com/user-attachments/assets/de01cd62-92c5-4e12-bc58-eaf784254384)
+![amplify push](https://github.com/user-attachments/assets/39629769-a77c-4f85-a020-cb92057a4153)
+![amplify publish](https://github.com/user-attachments/assets/f5992b88-eac1-44d6-b36a-186c48609363)
 
 The output of the `amplify publish` if all the deployment was done correctly is a URL This URL is the web application URl where you can open from the browser to access your application. By default, the front-end come with the sign-up UI disabled and user has to be created manually in the AWS Cognito service. To enable the sign-up UI you need to change the file: `App.css`
 
