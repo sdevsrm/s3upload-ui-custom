@@ -1,14 +1,10 @@
 import React from 'react';
 import { Amplify } from 'aws-amplify';
-import { Authenticator } from '@aws-amplify/ui-react';
 import '@aws-amplify/ui-react/styles.css';
 import './App.css';
 import awsconfig from './aws-exports';
 
-import { StorageBrowser } from './storage/StorageBrowserConfig';
-import AnalyzeVideoView from './storage/AnalyzeVideoView';
-import NetworkStatus from './components/NetworkStatus';
-
+// Configure Amplify BEFORE any StorageBrowser imports
 Amplify.configure({
   Auth: {
     Cognito: {
@@ -24,6 +20,12 @@ Amplify.configure({
     }
   }
 });
+
+// Now safe to import StorageBrowser (it calls createStorageBrowser at module load)
+const { StorageBrowser } = require('./storage/StorageBrowserConfig');
+const AnalyzeVideoView = require('./storage/AnalyzeVideoView').default;
+const { Authenticator } = require('@aws-amplify/ui-react');
+const NetworkStatus = require('./components/NetworkStatus').default;
 
 function App() {
   return (
