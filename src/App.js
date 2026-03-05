@@ -1,20 +1,11 @@
 import React from 'react';
-import { Amplify } from 'aws-amplify';
+import { Authenticator } from '@aws-amplify/ui-react';
 import '@aws-amplify/ui-react/styles.css';
 import './App.css';
-import awsconfig from './aws-exports';
 
-// Amplify v6 accepts v5 aws-exports format directly
-// Must configure BEFORE StorageBrowser loads
-Amplify.configure(awsconfig, {
-  ssr: false
-});
-
-// Lazy require to ensure Amplify is configured first
-const { StorageBrowser } = require('./storage/StorageBrowserConfig');
-const AnalyzeVideoView = require('./storage/AnalyzeVideoView').default;
-const { Authenticator } = require('@aws-amplify/ui-react');
-const NetworkStatus = require('./components/NetworkStatus').default;
+import { StorageBrowser } from './storage/StorageBrowserConfig';
+import AnalyzeVideoView from './storage/AnalyzeVideoView';
+import NetworkStatus from './components/NetworkStatus';
 
 function App() {
   return (
