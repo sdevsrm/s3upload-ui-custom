@@ -1,4 +1,4 @@
-import React, { useState, useCallback } from 'react';
+import React from 'react';
 import { Amplify } from 'aws-amplify';
 import { Authenticator } from '@aws-amplify/ui-react';
 import '@aws-amplify/ui-react/styles.css';
@@ -9,7 +9,21 @@ import { StorageBrowser } from './storage/StorageBrowserConfig';
 import AnalyzeVideoView from './storage/AnalyzeVideoView';
 import NetworkStatus from './components/NetworkStatus';
 
-Amplify.configure(awsconfig);
+Amplify.configure({
+  Auth: {
+    Cognito: {
+      userPoolId: awsconfig.aws_user_pools_id,
+      userPoolClientId: awsconfig.aws_user_pools_web_client_id,
+      identityPoolId: awsconfig.aws_cognito_identity_pool_id,
+    }
+  },
+  Storage: {
+    S3: {
+      bucket: awsconfig.aws_user_files_s3_bucket,
+      region: awsconfig.aws_user_files_s3_bucket_region,
+    }
+  }
+});
 
 function App() {
   return (
