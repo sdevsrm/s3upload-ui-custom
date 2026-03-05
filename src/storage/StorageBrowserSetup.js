@@ -78,33 +78,24 @@ function AnalyzeVideoView() {
     <Flex direction="column" padding="medium" gap="medium">
       <Button variation="link" onClick={() => onActionExit()}>← Back</Button>
       <Text fontSize="large" fontWeight="bold">🎬 Video Analysis</Text>
-      <Text color="font.tertiary">
-        Checks if the video pipeline has completed analysis.
-      </Text>
+      <Text color="font.tertiary">Checks if the video pipeline has completed analysis.</Text>
       {items.map((item) => (
         <Flex key={item.key} direction="row" alignItems="center" gap="small">
           <Text>📹 {item.key.split('/').pop()}</Text>
         </Flex>
       ))}
-      <Button variation="primary" onClick={() => handleAnalyze()}>
-        Check Analysis Results
-      </Button>
+      <Button variation="primary" onClick={() => handleAnalyze()}>Check Analysis Results</Button>
       {tasks?.map((task) => (
         <Flex key={task.data.key} direction="column" gap="small">
           {task.status === 'PENDING' && <Loader />}
-          {task.status === 'COMPLETE' && (
-            <Message colorTheme="success">Analysis found! Results opened in a new tab.</Message>
-          )}
-          {task.status === 'FAILED' && (
-            <Message colorTheme="warning">{task.message || 'Analysis not ready yet.'}</Message>
-          )}
+          {task.status === 'COMPLETE' && <Message colorTheme="success">Analysis found! Results opened in a new tab.</Message>}
+          {task.status === 'FAILED' && <Message colorTheme="warning">{task.message || 'Analysis not ready yet.'}</Message>}
         </Flex>
       ))}
     </Flex>
   );
 }
 
-// --- Default export: the rendered StorageBrowser with custom views ---
 export default function StorageBrowserSetup() {
   return <StorageBrowser views={{ AnalyzeVideoView }} />;
 }

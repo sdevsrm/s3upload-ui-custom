@@ -6,11 +6,8 @@ import './App.css';
 import awsconfig from './aws-exports';
 import NetworkStatus from './components/NetworkStatus';
 
-// Configure Amplify immediately at module load
 Amplify.configure(awsconfig);
 
-// Lazy-load StorageBrowser — React.lazy defers the import() to render time,
-// guaranteeing Amplify.configure() has already executed
 const StorageBrowserWrapper = React.lazy(() =>
   import('./storage/StorageBrowserSetup')
 );
@@ -30,15 +27,9 @@ function App() {
               <button className="sign-out-btn" onClick={signOut}>Sign out</button>
             </div>
           </header>
-
           <NetworkStatus />
-
           <main className="app-main">
-            <React.Suspense fallback={
-              <div style={{ padding: '40px', textAlign: 'center' }}>
-                Loading Storage Browser...
-              </div>
-            }>
+            <React.Suspense fallback={<div style={{ padding: '40px', textAlign: 'center' }}>Loading Storage Browser...</div>}>
               <StorageBrowserWrapper />
             </React.Suspense>
           </main>
