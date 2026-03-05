@@ -69,25 +69,19 @@ const analyzeVideoAction = {
     },
   },
   handler: ({ data }) => {
-    const handleAnalysis = async () => {
+    const fetch_ = async () => {
       try {
         const uploadId = data.key.replace(/\//g, '_');
-        const resultsKey = `analysis/${uploadId}/results.json`;
         const { getUrl } = await import('aws-amplify/storage');
-        const { url } = await getUrl({ path: resultsKey });
-        const response = await fetch(url.toString());
-        if (!response.ok) {
-          return { status: 'FAILED', message: 'Analysis not ready yet.' };
-        }
-        const results = await response.json();
-        const blob = new Blob([JSON.stringify(results, null, 2)], { type: 'application/json' });
-        window.open(URL.createObjectURL(blob), '_blank');
-        return { status: 'COMPLETE', value: { key: resultsKey } };
-      } catch (error) {
-        return { status: 'FAILED', message: error.message, error };
+        const { url } = await getUrl({ path: `analysis/${uploadId}/results.json` });
+        const res = await fetch(url.toString());
+        if (!res.ok) return { status: 'FAILED', message: 'Analysis not ready yet.' };
+        return { status: 'COMPLETE', value: await res.json() };
+      } catch (e) {
+        return { status: 'FAILED', message: e.message, error: e };
       }
     };
-    return { result: handleAnalysis() };
+    return { result: fetch_() };
   },
   viewName: 'AnalyzeVideoView',
 };
@@ -168,6 +162,11 @@ function ViewAnalysisView() {
 }
 
 // --- Analyze Video View ---
+const CLASSIFICATION_EMOJI = {
+  approach: '🚶', interaction: '🤝', conversation: '💬',
+  processing: '⚙️', departure: '🚪', idle: '💤', other: '📌'
+};
+
 function AnalyzeVideoView() {
   const { onActionExit, fileDataItems } = useView('LocationDetail');
   const items = React.useMemo(() => fileDataItems || [], [fileDataItems]);
@@ -189,16 +188,13 @@ function AnalyzeVideoView() {
   React.useEffect(() => () => clearInterval(pollRef.current), []);
 
   const handleClick = () => {
-    if (items[0]) {
-      const uploadId = items[0].key.replace(/\//g, '_');
-      startPolling(uploadId);
-    }
+    if (items[0]) startPolling(items[0].key.replace(/\//g, '_'));
     handleAnalyze();
   };
 
   const task = tasks?.[0];
+  const results = task?.status === 'COMPLETE' ? task.value : null;
 
-  // Stop polling once complete
   React.useEffect(() => {
     if (task?.status === 'COMPLETE' || task?.status === 'FAILED') {
       clearInterval(pollRef.current);
@@ -206,34 +202,67 @@ function AnalyzeVideoView() {
     }
   }, [task?.status]);
 
+  const fmt = (s) => `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, '0')}`;
+
   return (
     <Flex direction="column" padding="medium" gap="medium">
       <Button variation="link" onClick={() => onActionExit()}>← Back</Button>
       <Text fontSize="large" fontWeight="bold">🎬 Video Analysis</Text>
-      <Text color="font.tertiary">Checks if the video pipeline has completed analysis.</Text>
-      {items.map((item) => (
-        <Flex key={item.key} direction="row" alignItems="center" gap="small">
-          <Text>📹 {item.key.split('/').pop()}</Text>
-        </Flex>
+      {items.map(item => (
+        <Text key={item.key} color="font.tertiary">{item.key.split('/').pop()}</Text>
       ))}
+
       <Button variation="primary" onClick={handleClick}>Check Analysis Results</Button>
+
       {task?.status === 'PENDING' && (
         <Flex direction="column" gap="small">
           <Loader />
-          {progress ? (
-            <Text>
-              Analyzing… {progress.segmentsComplete} of {progress.segmentsTotal} segments complete
-              {progress.segmentsTotal > 0
-                ? ` (~${Math.round((1 - progress.segmentsComplete / progress.segmentsTotal) * progress.segmentsTotal * 15 / 60)} min remaining)`
-                : ''}
-            </Text>
-          ) : (
-            <Text color="font.tertiary">Checking pipeline status…</Text>
-          )}
+          <Text>{progress
+            ? `Analyzing… ${progress.segmentsComplete} of ${progress.segmentsTotal} segments complete (~${Math.round((progress.segmentsTotal - progress.segmentsComplete) * 15 / 60)} min remaining)`
+            : 'Checking pipeline status…'}
+          </Text>
         </Flex>
       )}
-      {task?.status === 'COMPLETE' && <Message colorTheme="success">Analysis found! Results opened in a new tab.</Message>}
-      {task?.status === 'FAILED' && <Message colorTheme="warning">{task.message || 'Analysis not ready yet.'}</Message>}
+
+      {task?.status === 'FAILED' && (
+        <Message colorTheme="warning">{task.message || 'Analysis not ready yet.'}</Message>
+      )}
+
+      {results && (
+        <Flex direction="column" gap="medium">
+          <Flex direction="row" gap="large" padding="small"
+            style={{ background: 'var(--amplify-colors-background-secondary)', borderRadius: 8 }}>
+            <Flex direction="column" alignItems="center">
+              <Text fontWeight="bold">{results.summary?.totalDuration}</Text>
+              <Text fontSize="small" color="font.tertiary">Duration</Text>
+            </Flex>
+            <Flex direction="column" alignItems="center">
+              <Text fontWeight="bold">{results.summary?.actionablePercent}</Text>
+              <Text fontSize="small" color="font.tertiary">Actionable</Text>
+            </Flex>
+            <Flex direction="column" alignItems="center">
+              <Text fontWeight="bold">{results.summary?.totalSegments}</Text>
+              <Text fontSize="small" color="font.tertiary">Segments</Text>
+            </Flex>
+            <Flex direction="column" alignItems="center">
+              <Text fontWeight="bold">{results.summary?.silentDuration}</Text>
+              <Text fontSize="small" color="font.tertiary">Silent</Text>
+            </Flex>
+          </Flex>
+
+          <Text fontWeight="bold">Actionable Segments</Text>
+          {results.segments?.filter(s => s.actionable).map((seg, i) => (
+            <Flex key={i} direction="column" gap="xxs" padding="small"
+              style={{ background: 'var(--amplify-colors-background-secondary)', borderRadius: 6 }}>
+              <Flex direction="row" gap="small" alignItems="center">
+                <Text fontWeight="bold">{CLASSIFICATION_EMOJI[seg.classification] || '📌'} {fmt(seg.start)} – {fmt(seg.end)}</Text>
+                <Text fontSize="small" color="font.tertiary">{seg.classification} · {seg.duration?.toFixed(1)}s</Text>
+              </Flex>
+              <Text fontSize="small">{seg.description}</Text>
+            </Flex>
+          ))}
+        </Flex>
+      )}
     </Flex>
   );
 }
