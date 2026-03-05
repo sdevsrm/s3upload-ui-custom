@@ -1,0 +1,514 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  S3 Upload v2 - Video Analysis Pipeline.
+  Triggers on video uploads, extracts audio silence segments via FFmpeg,
+  then sends non-silent segments to Amazon Nova for scene analysis.
+
+Parameters:
+  UploadBucketName:
+    Type: String
+    Description: Name of the existing S3 upload bucket (from Amplify)
+  BedrockModelId:
+    Type: String
+    Default: amazon.nova-pro-v1:0
+    Description: Bedrock model ID for video analysis
+    AllowedValues:
+      - amazon.nova-pro-v1:0
+      - amazon.nova-premier-v1:0
+      - amazon.nova-lite-v1:0
+
+Resources:
+
+  # ─── DynamoDB: stores analysis results ───
+  AnalysisTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub '${AWS::StackName}-video-analysis'
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: uploadId
+          AttributeType: S
+      KeySchema:
+        - AttributeName: uploadId
+          KeyType: HASH
+      TimeToLiveSpecification:
+        AttributeName: ttl
+        Enabled: true
+
+  # ─── IAM Role for Lambda functions ───
+  LambdaExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: S3Access
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:PutObject
+                  - s3:ListBucket
+                Resource:
+                  - !Sub 'arn:aws:s3:::${UploadBucketName}'
+                  - !Sub 'arn:aws:s3:::${UploadBucketName}/*'
+        - PolicyName: DynamoDBAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - dynamodb:PutItem
+                  - dynamodb:GetItem
+                  - dynamodb:UpdateItem
+                Resource: !GetAtt AnalysisTable.Arn
+        - PolicyName: BedrockAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - bedrock:InvokeModel
+                Resource: !Sub 'arn:aws:bedrock:${AWS::Region}::foundation-model/${BedrockModelId}'
+        - PolicyName: StepFunctionsAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - states:StartExecution
+                Resource: !GetAtt AnalysisPipeline.Arn
+
+  # ─── IAM Role for Step Functions ───
+  StepFunctionsRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: states.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: InvokeLambda
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: lambda:InvokeFunction
+                Resource:
+                  - !GetAtt AudioAnalyzerFunction.Arn
+                  - !GetAtt NovaAnalyzerFunction.Arn
+                  - !GetAtt ResultsAggregatorFunction.Arn
+
+  # ─── Lambda: S3 Trigger (starts pipeline) ───
+  TriggerFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub '${AWS::StackName}-trigger'
+      Runtime: python3.12
+      Handler: index.handler
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Timeout: 30
+      MemorySize: 128
+      Environment:
+        Variables:
+          STATE_MACHINE_ARN: !GetAtt AnalysisPipeline.Arn
+          ANALYSIS_TABLE: !Ref AnalysisTable
+      Code:
+        ZipFile: |
+          import json, os, urllib.parse, boto3
+          sfn = boto3.client('stepfunctions')
+          ddb = boto3.resource('dynamodb').Table(os.environ['ANALYSIS_TABLE'])
+
+          def handler(event, context):
+              for record in event['Records']:
+                  bucket = record['s3']['bucket']['name']
+                  key = urllib.parse.unquote_plus(record['s3']['object']['key'])
+                  size = record['s3']['object'].get('size', 0)
+
+                  # Only process video files in videos/ prefix
+                  if not key.startswith('videos/'):
+                      continue
+
+                  upload_id = key.replace('/', '_')
+
+                  # Mark as processing in DynamoDB
+                  ddb.put_item(Item={
+                      'uploadId': upload_id,
+                      'status': 'PROCESSING',
+                      's3Key': key,
+                      'bucket': bucket,
+                      'fileSize': size
+                  })
+
+                  # Start Step Functions pipeline
+                  sfn.start_execution(
+                      stateMachineArn=os.environ['STATE_MACHINE_ARN'],
+                      name=upload_id[:80],
+                      input=json.dumps({
+                          'uploadId': upload_id,
+                          'bucket': bucket,
+                          's3Key': key,
+                          'fileSize': size
+                      })
+                  )
+              return {'statusCode': 200}
+
+  TriggerPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref TriggerFunction
+      Action: lambda:InvokeFunction
+      Principal: s3.amazonaws.com
+      SourceArn: !Sub 'arn:aws:s3:::${UploadBucketName}'
+
+  # ─── Lambda: Audio Analyzer (FFmpeg silence detection) ───
+  AudioAnalyzerFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub '${AWS::StackName}-audio-analyzer'
+      Runtime: python3.12
+      Handler: index.handler
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Timeout: 900
+      MemorySize: 3008
+      # NOTE: Requires FFmpeg Lambda layer. Add your layer ARN below.
+      # Layers:
+      #   - arn:aws:lambda:REGION:ACCOUNT:layer:ffmpeg:VERSION
+      Environment:
+        Variables:
+          BUCKET: !Ref UploadBucketName
+      Code:
+        ZipFile: |
+          """
+          Downloads video from S3, runs FFmpeg silencedetect,
+          returns list of segments with has_audio flag.
+
+          Requires FFmpeg Lambda layer or container image.
+          For videos > 10min, consider ECS Fargate instead.
+          """
+          import json, os, subprocess, re, boto3, tempfile
+
+          s3 = boto3.client('s3')
+
+          def handler(event, context):
+              bucket = event['bucket']
+              key = event['s3Key']
+              upload_id = event['uploadId']
+
+              # Download video to /tmp
+              local_path = f'/tmp/{os.path.basename(key)}'
+              s3.download_file(bucket, key, local_path)
+
+              # Get video duration
+              probe = subprocess.run(
+                  ['ffprobe', '-v', 'error', '-show_entries', 'format=duration',
+                   '-of', 'json', local_path],
+                  capture_output=True, text=True
+              )
+              duration = float(json.loads(probe.stdout)['format']['duration'])
+
+              # Detect silence (threshold: -30dB, min duration: 2s)
+              result = subprocess.run(
+                  ['ffmpeg', '-i', local_path, '-af',
+                   'silencedetect=noise=-30dB:d=2', '-f', 'null', '-'],
+                  capture_output=True, text=True
+              )
+
+              # Parse silence ranges
+              silence_starts = re.findall(r'silence_start: ([\d.]+)', result.stderr)
+              silence_ends = re.findall(r'silence_end: ([\d.]+)', result.stderr)
+
+              silences = list(zip(
+                  [float(s) for s in silence_starts],
+                  [float(e) for e in silence_ends]
+              ))
+
+              # Build segments
+              segments = []
+              pos = 0.0
+              for s_start, s_end in silences:
+                  if pos < s_start:
+                      segments.append({
+                          'start': round(pos, 2),
+                          'end': round(s_start, 2),
+                          'has_audio': True,
+                          'duration': round(s_start - pos, 2)
+                      })
+                  segments.append({
+                      'start': round(s_start, 2),
+                      'end': round(s_end, 2),
+                      'has_audio': False,
+                      'duration': round(s_end - s_start, 2)
+                  })
+                  pos = s_end
+
+              if pos < duration:
+                  segments.append({
+                      'start': round(pos, 2),
+                      'end': round(duration, 2),
+                      'has_audio': True,
+                      'duration': round(duration - pos, 2)
+                  })
+
+              # Cleanup
+              os.remove(local_path)
+
+              return {
+                  **event,
+                  'duration': duration,
+                  'segments': segments,
+                  'silentDuration': sum(s['duration'] for s in segments if not s['has_audio']),
+                  'audioDuration': sum(s['duration'] for s in segments if s['has_audio'])
+              }
+
+  # ─── Lambda: Nova Scene Analyzer ───
+  NovaAnalyzerFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub '${AWS::StackName}-nova-analyzer'
+      Runtime: python3.12
+      Handler: index.handler
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Timeout: 900
+      MemorySize: 1024
+      Environment:
+        Variables:
+          MODEL_ID: !Ref BedrockModelId
+          BUCKET: !Ref UploadBucketName
+      Code:
+        ZipFile: |
+          """
+          For each segment with audio, sends video frames to Nova
+          for scene description and activity classification.
+          """
+          import json, os, boto3
+
+          bedrock = boto3.client('bedrock-runtime')
+          s3 = boto3.client('s3')
+
+          CLASSIFICATIONS = [
+              'approach', 'interaction', 'conversation',
+              'processing', 'departure', 'idle', 'other'
+          ]
+
+          def handler(event, context):
+              segments = event['segments']
+              s3_key = event['s3Key']
+              bucket = event['bucket']
+              model_id = os.environ['MODEL_ID']
+
+              analyzed = []
+              for seg in segments:
+                  if seg['has_audio']:
+                      # Call Nova with S3 video reference
+                      prompt = (
+                          f"Analyze this video segment from {seg['start']}s to {seg['end']}s. "
+                          f"Describe what is happening. Classify the activity as one of: "
+                          f"{', '.join(CLASSIFICATIONS)}. "
+                          f"Is this segment actionable (contains meaningful interaction)? "
+                          f"Respond in JSON: {{\"description\": ..., \"classification\": ..., \"actionable\": bool}}"
+                      )
+
+                      try:
+                          response = bedrock.invoke_model(
+                              modelId=model_id,
+                              contentType='application/json',
+                              accept='application/json',
+                              body=json.dumps({
+                                  "messages": [{
+                                      "role": "user",
+                                      "content": [
+                                          {
+                                              "video": {
+                                                  "format": "mp4",
+                                                  "source": {
+                                                      "s3Location": {
+                                                          "uri": f"s3://{bucket}/{s3_key}",
+                                                          "bucketOwner": os.environ.get('AWS_ACCOUNT_ID', '')
+                                                      }
+                                                  }
+                                              }
+                                          },
+                                          {"text": prompt}
+                                      ]
+                                  }],
+                                  "inferenceConfig": {"maxTokens": 512}
+                              })
+                          )
+
+                          body = json.loads(response['body'].read())
+                          analysis_text = body.get('output', {}).get('message', {}).get('content', [{}])[0].get('text', '{}')
+                          analysis = json.loads(analysis_text)
+
+                          seg['description'] = analysis.get('description', 'Analysis unavailable')
+                          seg['classification'] = analysis.get('classification', 'other')
+                          seg['actionable'] = analysis.get('actionable', True)
+
+                      except Exception as e:
+                          seg['description'] = f'Analysis failed: {str(e)}'
+                          seg['classification'] = 'other'
+                          seg['actionable'] = True
+                  else:
+                      seg['description'] = 'No audio detected - silent segment'
+                      seg['classification'] = 'idle'
+                      seg['actionable'] = False
+
+                  analyzed.append(seg)
+
+              return {**event, 'segments': analyzed}
+
+  # ─── Lambda: Results Aggregator ───
+  ResultsAggregatorFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub '${AWS::StackName}-results-aggregator'
+      Runtime: python3.12
+      Handler: index.handler
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Timeout: 60
+      MemorySize: 256
+      Environment:
+        Variables:
+          ANALYSIS_TABLE: !Ref AnalysisTable
+          BUCKET: !Ref UploadBucketName
+      Code:
+        ZipFile: |
+          """
+          Aggregates analysis results, writes JSON to S3 and DynamoDB.
+          """
+          import json, os, time, boto3
+
+          s3 = boto3.client('s3')
+          ddb = boto3.resource('dynamodb').Table(os.environ['ANALYSIS_TABLE'])
+
+          def handler(event, context):
+              upload_id = event['uploadId']
+              segments = event['segments']
+              duration = event['duration']
+              bucket = os.environ['BUCKET']
+
+              actionable_duration = sum(
+                  s['duration'] for s in segments if s.get('actionable')
+              )
+
+              result = {
+                  'uploadId': upload_id,
+                  's3Key': event['s3Key'],
+                  'duration': duration,
+                  'segments': segments,
+                  'summary': {
+                      'totalDuration': f"{duration:.1f}s",
+                      'actionableDuration': f"{actionable_duration:.1f}s",
+                      'actionablePercent': f"{(actionable_duration/duration*100):.0f}%",
+                      'silentDuration': f"{event.get('silentDuration', 0):.1f}s",
+                      'totalSegments': len(segments),
+                      'actionableSegments': sum(1 for s in segments if s.get('actionable'))
+                  },
+                  'status': 'COMPLETE',
+                  'completedAt': int(time.time()),
+                  'ttl': int(time.time()) + (90 * 86400)  # 90 day TTL
+              }
+
+              # Write full results to S3
+              results_key = f"analysis/{upload_id}/results.json"
+              s3.put_object(
+                  Bucket=bucket,
+                  Key=results_key,
+                  Body=json.dumps(result, indent=2),
+                  ContentType='application/json'
+              )
+
+              # Update DynamoDB with summary
+              ddb.update_item(
+                  Key={'uploadId': upload_id},
+                  UpdateExpression='SET #s = :s, summary = :sum, resultsKey = :rk, completedAt = :ca, #t = :ttl',
+                  ExpressionAttributeNames={'#s': 'status', '#t': 'ttl'},
+                  ExpressionAttributeValues={
+                      ':s': 'COMPLETE',
+                      ':sum': result['summary'],
+                      ':rk': results_key,
+                      ':ca': result['completedAt'],
+                      ':ttl': result['ttl']
+                  }
+              )
+
+              return result
+
+  # ─── Step Functions: Analysis Pipeline ───
+  AnalysisPipeline:
+    Type: AWS::StepFunctions::StateMachine
+    Properties:
+      StateMachineName: !Sub '${AWS::StackName}-pipeline'
+      RoleArn: !GetAtt StepFunctionsRole.Arn
+      DefinitionString: !Sub |
+        {
+          "Comment": "Video analysis pipeline: audio detection → Nova scene analysis → results",
+          "StartAt": "AnalyzeAudio",
+          "States": {
+            "AnalyzeAudio": {
+              "Type": "Task",
+              "Resource": "${AudioAnalyzerFunction.Arn}",
+              "Next": "HasAudioSegments",
+              "Catch": [{
+                "ErrorEquals": ["States.ALL"],
+                "Next": "AnalysisFailed"
+              }]
+            },
+            "HasAudioSegments": {
+              "Type": "Choice",
+              "Choices": [{
+                "Variable": "$.audioDuration",
+                "NumericGreaterThan": 0,
+                "Next": "AnalyzeScenes"
+              }],
+              "Default": "AggregateResults"
+            },
+            "AnalyzeScenes": {
+              "Type": "Task",
+              "Resource": "${NovaAnalyzerFunction.Arn}",
+              "Next": "AggregateResults",
+              "Catch": [{
+                "ErrorEquals": ["States.ALL"],
+                "Next": "AggregateResults"
+              }]
+            },
+            "AggregateResults": {
+              "Type": "Task",
+              "Resource": "${ResultsAggregatorFunction.Arn}",
+              "End": true
+            },
+            "AnalysisFailed": {
+              "Type": "Fail",
+              "Error": "AnalysisError",
+              "Cause": "Audio analysis failed"
+            }
+          }
+        }
+
+Outputs:
+  AnalysisTableName:
+    Value: !Ref AnalysisTable
+  PipelineArn:
+    Value: !GetAtt AnalysisPipeline.Arn
+  TriggerFunctionArn:
+    Value: !GetAtt TriggerFunction.Arn
+    Description: >
+      Add S3 event notification on your upload bucket for prefix 'videos/'
+      pointing to this Lambda ARN.
+  DeployNote:
+    Value: !Sub >
+      After deploying, add an S3 event notification on bucket ${UploadBucketName}
+      for ObjectCreated events with prefix 'protected/' and suffix matching video
+      extensions, targeting the trigger Lambda.

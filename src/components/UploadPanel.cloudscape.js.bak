@@ -1,0 +1,7 @@
+/**
+ * This file is no longer used.
+ * Upload UI is now handled by Amplify StorageBrowser component.
+ * Kept as reference in case we switch back to Cloudscape UI.
+ *
+ * To restore: import UploadPanel from './components/UploadPanel.cloudscape'
+ */
