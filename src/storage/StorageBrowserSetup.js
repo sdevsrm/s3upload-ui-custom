@@ -100,10 +100,12 @@ export default function StorageBrowserSetup() {
   return (
     <StorageBrowser
       views={{ AnalyzeVideoView }}
-      defaultLocation={{
-        bucket: 's3uploadv281d32340117947dd82b04e7880362a5156621-dev',
-        prefix: '',
-        permission: ['get', 'list', 'write', 'delete'],
+      defaultValue={{
+        location: {
+          bucket: 's3uploadv281d32340117947dd82b04e7880362a5156621-dev',
+          prefix: '',
+          permissions: ['delete', 'get', 'list', 'write'],
+        },
       }}
     />
   );
