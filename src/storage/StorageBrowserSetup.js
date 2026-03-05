@@ -9,7 +9,7 @@ import '@aws-amplify/ui-react-storage/styles.css';
 import { buildS3KeyFromName, extractFileMetadata } from '../utils/fileClassifier';
 import { Button, Flex, Text, Loader, Message } from '@aws-amplify/ui-react';
 
-// --- Custom upload: content-type routing ---
+// --- Custom upload: content-type routing + Electron power save integration ---
 const contentRoutedUpload = {
   ...defaultActionConfigs.upload,
   handler: (input) => {
@@ -17,10 +17,23 @@ const contentRoutedUpload = {
     const fileName = (data.key || '').split('/').pop() || data.key;
     const routedKey = buildS3KeyFromName(fileName, data.type || '');
     const metadata = data.file ? extractFileMetadata(data.file) : {};
-    return defaultHandlers.upload({
+
+    // Notify Electron to prevent sleep during upload
+    if (window.electron) window.electron.uploadStart();
+
+    const output = defaultHandlers.upload({
       ...rest,
       data: { ...data, key: routedKey, metadata },
     });
+
+    // Intercept result to release power save blocker when done
+    const wrappedResult = output.result.then((res) => {
+      uploadTasks.delete(routedKey);
+      if (window.electron) window.electron.uploadComplete();
+      return res;
+    });
+
+    return { ...output, result: wrappedResult };
   },
 };
 
