@@ -1,15 +1,5 @@
 import { classifyByMimeAndName, buildS3KeyFromName, extractFileMetadata } from '../utils/fileClassifier';
 
-// Mock date to 2026-03-05 for deterministic key paths
-beforeAll(() => {
-  jest.useFakeTimers();
-  jest.setSystemTime(new Date('2026-03-05T00:00:00Z'));
-});
-
-afterAll(() => {
-  jest.useRealTimers();
-});
-
 describe('classifyByMimeAndName', () => {
   test.each([
     ['image/jpeg',       'photo.jpg',   'image'],
@@ -28,12 +18,12 @@ describe('classifyByMimeAndName', () => {
 
 describe('buildS3KeyFromName', () => {
   test.each([
-    ['photo.jpg',   'image/jpeg',        'images/2026/03/05/photo.jpg'],
-    ['clip.mp4',    'video/mp4',         'videos/2026/03/05/clip.mp4'],
-    ['report.pdf',  'application/pdf',   'documents/2026/03/05/report.pdf'],
-    ['song.mp3',    'audio/mpeg',        'audio/2026/03/05/song.mp3'],
-    ['archive.zip', 'application/zip',   'archives/2026/03/05/archive.zip'],
-    ['unknown.xyz', '',                  'other/2026/03/05/unknown.xyz'],
+    ['photo.jpg',   'image/jpeg',        'images/photo.jpg'],
+    ['clip.mp4',    'video/mp4',         'videos/clip.mp4'],
+    ['report.pdf',  'application/pdf',   'documents/report.pdf'],
+    ['song.mp3',    'audio/mpeg',        'audio/song.mp3'],
+    ['archive.zip', 'application/zip',   'archives/archive.zip'],
+    ['unknown.xyz', '',                  'other/unknown.xyz'],
   ])('%s → %s', (name, mime, expected) => {
     expect(buildS3KeyFromName(name, mime)).toBe(expected);
   });

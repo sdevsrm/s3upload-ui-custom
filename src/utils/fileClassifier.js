@@ -27,19 +27,13 @@ export function classifyByMimeAndName(mime, name) {
  * Builds a content-type routed S3 key from a filename and MIME type.
  *
  * Input:  "photo.jpg", "image/jpeg"
- * Output: "images/2026/03/05/photo.jpg"
+ * Output: "images/photo.jpg"
+ * (upload-date stored as S3 object metadata, not in the key path)
  */
 export function buildS3KeyFromName(fileName, mimeType = '') {
   const category = classifyByMimeAndName(mimeType, fileName);
   const prefix = CONTENT_CATEGORIES[category].prefix;
-  const now = new Date();
-  const datePath = [
-    now.getFullYear(),
-    String(now.getMonth() + 1).padStart(2, '0'),
-    String(now.getDate()).padStart(2, '0')
-  ].join('/');
-
-  return `${prefix}/${datePath}/${fileName}`;
+  return `${prefix}/${fileName}`;
 }
 
 /**
