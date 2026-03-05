@@ -34,8 +34,11 @@ const viewAnalysisAction = {
     disable: (selected) => {
       if (!selected?.length || selected.length !== 1) return true;
       const key = selected[0].key || '';
-      // key may be full path OR relative (when browsed into subfolder)
-      return !ANALYZED_PREFIXES.some(p => key.startsWith(p) || key.includes(`/${p.replace('/', '')}/`) || selected[0].type === 'FILE');
+      // Enabled only for image/audio/document prefixes, never for videos
+      const isVideo = ['.mp4','.mov','.avi','.mkv','.wmv','.webm']
+        .some(ext => key.toLowerCase().endsWith(ext));
+      if (isVideo) return true;
+      return !ANALYZED_PREFIXES.some(p => key.startsWith(p) || key.includes(`/${p.replace('/','')}/`));
     },
   },
   handler: ({ data }) => {
@@ -70,16 +73,21 @@ const analyzeVideoAction = {
   },
   handler: ({ data }) => {
     const fetch_ = async () => {
-      try {
-        const uploadId = data.key.replace(/\//g, '_');
-        const { getUrl } = await import('aws-amplify/storage');
-        const { url } = await getUrl({ path: `analysis/${uploadId}/results.json` });
-        const res = await fetch(url.toString());
-        if (!res.ok) return { status: 'FAILED', message: 'Analysis not ready yet.' };
-        return { status: 'COMPLETE', value: await res.json() };
-      } catch (e) {
-        return { status: 'FAILED', message: e.message, error: e };
+      const uploadId = data.key.replace(/\//g, '_');
+      const { getUrl } = await import('aws-amplify/storage');
+
+      // Poll until results.json exists (max 15 min, 10s interval)
+      const deadline = Date.now() + 15 * 60 * 1000;
+      while (Date.now() < deadline) {
+        try {
+          const { url } = await getUrl({ path: `analysis/${uploadId}/results.json` });
+          const res = await fetch(url.toString());
+          if (res.ok) return { status: 'COMPLETE', value: await res.json() };
+        } catch (_) {}
+        // Not ready yet — wait 10s then retry
+        await new Promise(r => setTimeout(r, 10000));
       }
+      return { status: 'FAILED', message: 'Analysis timed out after 15 minutes.' };
     };
     return { result: fetch_() };
   },
@@ -174,7 +182,8 @@ function AnalyzeVideoView() {
   const [progress, setProgress] = React.useState(null);
   const pollRef = React.useRef(null);
 
-  const startPolling = React.useCallback(async (uploadId) => {
+  // Poll progress.json independently for UI feedback while handler waits
+  const startProgressPolling = React.useCallback(async (uploadId) => {
     const { getUrl } = await import('aws-amplify/storage');
     pollRef.current = setInterval(async () => {
       try {
@@ -187,11 +196,6 @@ function AnalyzeVideoView() {
 
   React.useEffect(() => () => clearInterval(pollRef.current), []);
 
-  const handleClick = () => {
-    if (items[0]) startPolling(items[0].key.replace(/\//g, '_'));
-    handleAnalyze();
-  };
-
   const task = tasks?.[0];
   const results = task?.status === 'COMPLETE' ? task.value : null;
 
@@ -201,6 +205,11 @@ function AnalyzeVideoView() {
       setProgress(null);
     }
   }, [task?.status]);
+
+  const handleClick = () => {
+    if (items[0]) startProgressPolling(items[0].key.replace(/\//g, '_'));
+    handleAnalyze();
+  };
 
   const fmt = (s) => `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, '0')}`;
 
