@@ -34,7 +34,8 @@ const viewAnalysisAction = {
     disable: (selected) => {
       if (!selected?.length || selected.length !== 1) return true;
       const key = selected[0].key || '';
-      return !ANALYZED_PREFIXES.some(p => key.startsWith(p));
+      // key may be full path OR relative (when browsed into subfolder)
+      return !ANALYZED_PREFIXES.some(p => key.startsWith(p) || key.includes(`/${p.replace('/', '')}/`) || selected[0].type === 'FILE');
     },
   },
   handler: ({ data }) => {
@@ -171,6 +172,39 @@ function AnalyzeVideoView() {
   const { onActionExit, fileDataItems } = useView('LocationDetail');
   const items = React.useMemo(() => fileDataItems || [], [fileDataItems]);
   const [{ tasks }, handleAnalyze] = useAction('analyzeVideo', { items });
+  const [progress, setProgress] = React.useState(null);
+  const pollRef = React.useRef(null);
+
+  const startPolling = React.useCallback(async (uploadId) => {
+    const { getUrl } = await import('aws-amplify/storage');
+    pollRef.current = setInterval(async () => {
+      try {
+        const { url } = await getUrl({ path: `analysis/${uploadId}/progress.json` });
+        const res = await fetch(url.toString());
+        if (res.ok) setProgress(await res.json());
+      } catch (_) {}
+    }, 8000);
+  }, []);
+
+  React.useEffect(() => () => clearInterval(pollRef.current), []);
+
+  const handleClick = () => {
+    if (items[0]) {
+      const uploadId = items[0].key.replace(/\//g, '_');
+      startPolling(uploadId);
+    }
+    handleAnalyze();
+  };
+
+  const task = tasks?.[0];
+
+  // Stop polling once complete
+  React.useEffect(() => {
+    if (task?.status === 'COMPLETE' || task?.status === 'FAILED') {
+      clearInterval(pollRef.current);
+      setProgress(null);
+    }
+  }, [task?.status]);
 
   return (
     <Flex direction="column" padding="medium" gap="medium">
@@ -182,14 +216,24 @@ function AnalyzeVideoView() {
           <Text>📹 {item.key.split('/').pop()}</Text>
         </Flex>
       ))}
-      <Button variation="primary" onClick={() => handleAnalyze()}>Check Analysis Results</Button>
-      {tasks?.map((task) => (
-        <Flex key={task.data.key} direction="column" gap="small">
-          {task.status === 'PENDING' && <Loader />}
-          {task.status === 'COMPLETE' && <Message colorTheme="success">Analysis found! Results opened in a new tab.</Message>}
-          {task.status === 'FAILED' && <Message colorTheme="warning">{task.message || 'Analysis not ready yet.'}</Message>}
+      <Button variation="primary" onClick={handleClick}>Check Analysis Results</Button>
+      {task?.status === 'PENDING' && (
+        <Flex direction="column" gap="small">
+          <Loader />
+          {progress ? (
+            <Text>
+              Analyzing… {progress.segmentsComplete} of {progress.segmentsTotal} segments complete
+              {progress.segmentsTotal > 0
+                ? ` (~${Math.round((1 - progress.segmentsComplete / progress.segmentsTotal) * progress.segmentsTotal * 15 / 60)} min remaining)`
+                : ''}
+            </Text>
+          ) : (
+            <Text color="font.tertiary">Checking pipeline status…</Text>
+          )}
         </Flex>
-      ))}
+      )}
+      {task?.status === 'COMPLETE' && <Message colorTheme="success">Analysis found! Results opened in a new tab.</Message>}
+      {task?.status === 'FAILED' && <Message colorTheme="warning">{task.message || 'Analysis not ready yet.'}</Message>}
     </Flex>
   );
 }
